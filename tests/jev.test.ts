@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { cleanAndParseJson, evaluateScrapedDocument, evaluateRagGroundedness } from "../src/services/jev";
 
-describe("TypeSafe JEV-1.14.0 Service", () => {
+describe("TypeSafe JEV-1.14.0 & Clef Service", () => {
   describe("cleanAndParseJson", () => {
     it("should parse clean JSON strings", () => {
       const input = '{"isValidContent": true, "category": "article"}';
@@ -58,6 +58,37 @@ describe("TypeSafe JEV-1.14.0 Service", () => {
       expect(result.tldrBullets).toHaveLength(3);
     });
 
+    it("should fall back to @cf/cloudflare/clef when JEV fails", async () => {
+      const mockAi = {
+        run: vi.fn().mockImplementation(async (model: string) => {
+          if (model.includes("jev")) {
+            throw new Error("JEV model unavailable");
+          }
+          if (model.includes("clef")) {
+            return {
+              answers: {
+                is_valid: { noul: 0.98 },
+                category: { choice: "documentation", confidence: 0.95 },
+                quality_level: { score: 3.0 },
+              },
+            };
+          }
+          throw new Error("Unknown model");
+        }),
+      };
+
+      const result = await evaluateScrapedDocument(
+        { AI: mockAi },
+        "# DeepSeek Documentation\n\nDeepSeek V4 Flash context limits.",
+        "https://docs.deepseek.com"
+      );
+
+      expect(result.isValidContent).toBe(true);
+      expect(result.category).toBe("documentation");
+      expect(result.informationDensityScore).toBe(1.0);
+      expect(result.autoTags).toContain("clef-evaluated");
+    });
+
     it("should identify access-blocked or empty pages with fallback", async () => {
       const result = await evaluateScrapedDocument(
         {},
@@ -71,7 +102,7 @@ describe("TypeSafe JEV-1.14.0 Service", () => {
   });
 
   describe("evaluateRagGroundedness", () => {
-    it("should return grounded status with confidence score", async () => {
+    it("should return grounded status with confidence score via JEV", async () => {
       const mockAi = {
         run: async () => ({
           isGrounded: true,
@@ -91,6 +122,36 @@ describe("TypeSafe JEV-1.14.0 Service", () => {
       expect(result.isGrounded).toBe(true);
       expect(result.confidenceScore).toBe(0.96);
       expect(result.supportedChunkIndices).toContain(0);
+      expect(result.hallucinationWarning).toBeNull();
+    });
+
+    it("should fall back to @cf/cloudflare/clef for RAG audit when JEV fails", async () => {
+      const mockAi = {
+        run: vi.fn().mockImplementation(async (model: string) => {
+          if (model.includes("jev")) {
+            throw new Error("JEV model unavailable");
+          }
+          if (model.includes("clef")) {
+            return {
+              answers: {
+                is_grounded: { noul: 0.95 },
+                grounding_confidence: { score: 3.0 },
+              },
+            };
+          }
+          throw new Error("Unknown model");
+        }),
+      };
+
+      const result = await evaluateRagGroundedness(
+        { AI: mockAi },
+        "Who created SQLite?",
+        ["SQLite was created by D. Richard Hipp in August 2000."],
+        "SQLite was created by D. Richard Hipp in August 2000."
+      );
+
+      expect(result.isGrounded).toBe(true);
+      expect(result.confidenceScore).toBe(1.0);
       expect(result.hallucinationWarning).toBeNull();
     });
   });

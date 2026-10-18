@@ -4,8 +4,9 @@ import type { WorkflowEnv } from "../../workflows/clip-pipeline";
 
 export const searchApi = new Hono<{ Bindings: WorkflowEnv }>();
 
-// Candidate synthesis models prioritizing strict adherence models
+// Candidate synthesis models prioritizing DeepSeek V4 Flash with Llama fallbacks
 const SYNTHESIS_MODEL_CANDIDATES = [
+  "@cf/deepseek-ai/deepseek-v4-flash-0731",
   "@cf/meta/llama-3.1-8b-instruct-fast",
   "@cf/meta/llama-3.1-8b-instruct",
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast",

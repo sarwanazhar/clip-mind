@@ -51,8 +51,8 @@
 - **Headless Chrome DOM Sanitization**: Headless rendering via Cloudflare Browser Rendering (`@cloudflare/puppeteer`), stripping navigation noise, ads, footers, and tracking scripts while explicitly extracting structured metadata and Wikipedia infobox tables (`<table class="infobox">`).
 - **Native Dual AI Pipeline**:
   - **Dense Embeddings**: `@cf/baai/bge-small-en-v1.5` generating 384-dimensional dense vectors.
-  - **Evaluation & Guardrails**: `@cf/typesafe/jev-1.14.0` (with fallback to `typesafe/jev-1.14.0` and heuristic rules) enforcing quality gates, synthetic tags, and citation alignment checks.
-  - **Extractive Edge RAG**: `@cf/meta/llama-3.2-3b-instruct` operating with strict temperature = 0.0 closed-book prompting and citation attribution.
+  - **Evaluation & Guardrails**: `@cf/typesafe/jev-1.14.0` with first-class fallback to Cloudflare's native open-weight decision model **`@cf/cloudflare/clef`** (`noul`, `choice`, `score` schemas) and heuristic rules.
+  - **Extractive Edge RAG**: **`@cf/deepseek-ai/deepseek-v4-flash-0731`** (with Llama 3.x fallbacks) operating with strict closed-book prompting and citation attribution.
 - **Cloudflare Vectorize + D1**: Sub-second cosine similarity search on Vectorize paired with relational document tracking, chunk offsets, and cascading referential integrity on D1.
 - **Full Data Purge Support**: Unified single-click deletion purging across D1, Vectorize (`deleteByIds`), R2 snapshots, and KV cache simultaneously.
 - **Domainless Discord Ingestion**: Zero-server Discord bot verifying Ed25519 signatures with TweetNaCl at the edge.

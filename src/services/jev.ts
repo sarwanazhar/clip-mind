@@ -21,13 +21,20 @@ const JEV_MODEL_CANDIDATES = [
   "typesafe/jev-1.14.0",
 ];
 
+// Fallback decision model candidates (Cloudflare Clef family)
+const CLEF_MODEL_CANDIDATES = [
+  "@cf/cloudflare/clef",
+  "@cf/cloudflare/clef-flash",
+  "clef",
+];
+
 /**
  * Defensive JSON parser that strips markdown fences (```json ... ```) or extracts JSON substring.
  */
 export function cleanAndParseJson<T>(raw: unknown): T | null {
   if (!raw) return null;
 
-  if (typeof raw === "object" && raw !== null && !("response" in raw)) {
+  if (typeof raw === "object" && raw !== null && !("response" in raw) && !("answers" in raw)) {
     return raw as T;
   }
 
@@ -99,14 +106,149 @@ async function invokeJev(
 }
 
 /**
- * Evaluates a scraped page using JEV-1.14.0 (leveraging up to 28,000 characters of its 32k context).
+ * Fallback: Evaluates a scraped page using Cloudflare Clef (@cf/cloudflare/clef)
+ * Clef is a native open-weight decision model accepting state and typed questions schema (noul, choice, score).
+ */
+async function evaluateWithClef(
+  aiBinding: any,
+  truncatedMarkdown: string,
+  url: string
+): Promise<JevDocumentEvaluation | null> {
+  if (!aiBinding || typeof aiBinding.run !== "function") return null;
+
+  for (const model of CLEF_MODEL_CANDIDATES) {
+    try {
+      const response = await aiBinding.run(model as any, {
+        state: `URL: ${url}\n\nContent:\n${truncatedMarkdown.slice(0, 16000)}`,
+        questions: {
+          is_valid: {
+            type: "noul",
+            instructions: "Is this valid substantive web content, rather than an error page, 403/404, captcha, login barrier, or empty page?"
+          },
+          category: {
+            type: "choice",
+            instructions: "What is the primary category of this content?",
+            criteria: {
+              documentation: "API reference, software documentation, or developer guides",
+              tutorial: "How-to guides, tutorials, or step-by-step walkthroughs",
+              article: "General news, blog posts, or editorial write-ups",
+              repository: "Source code repository, package info, or release notes",
+              reference: "Encyclopedia entries, dictionaries, or data sheets"
+            }
+          },
+          quality_level: {
+            type: "score",
+            instructions: "Rate the technical information density and substance of this page.",
+            criteria: ["Low/Empty", "Basic", "Moderate", "High"]
+          }
+        }
+      });
+
+      // Parse Clef decision output
+      // Format: { answers: { is_valid: { noul: 0.95 }, category: { choice: "documentation", confidence: 0.9 }, quality_level: { score: 3.0 } } }
+      const answers = (response as any)?.answers || (response as any);
+      if (answers && answers.is_valid !== undefined) {
+        const noulVal = typeof answers.is_valid?.noul === "number"
+          ? answers.is_valid.noul
+          : (answers.is_valid === true ? 1.0 : 0.0);
+        const isValidContent = noulVal >= 0.5;
+
+        const rawCat = answers.category?.choice || "article";
+        const validCategories = ["documentation", "tutorial", "article", "repository", "reference"] as const;
+        const category = validCategories.includes(rawCat) ? rawCat : "article";
+
+        const scoreVal = typeof answers.quality_level?.score === "number"
+          ? answers.quality_level.score / 3.0 // scale 0-3 to 0.0-1.0
+          : 0.8;
+        const informationDensityScore = Math.round(Math.min(1.0, Math.max(0.0, scoreVal)) * 100) / 100;
+
+        return {
+          isValidContent,
+          rejectionReason: isValidContent ? undefined : "Flagged as non-substantive or blocked page by @cf/cloudflare/clef",
+          category,
+          informationDensityScore,
+          autoTags: ["clef-evaluated", category, "clipmind"],
+          tldrBullets: [
+            `Evaluated via Cloudflare Clef decision model (${category}).`,
+            "Clean readability text archived into edge vault.",
+            "Prepared for vector indexing and semantic retrieval."
+          ],
+        };
+      }
+    } catch (clefErr) {
+      console.warn(`Clef candidate ${model} call failed:`, clefErr);
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fallback: Evaluates RAG Groundedness using Cloudflare Clef (@cf/cloudflare/clef)
+ */
+async function evaluateRagWithClef(
+  aiBinding: any,
+  query: string,
+  contextChunks: string[],
+  generatedAnswer: string
+): Promise<JevRagEvaluation | null> {
+  if (!aiBinding || typeof aiBinding.run !== "function") return null;
+
+  const state = `Question: ${query}\n\nGenerated Answer: ${generatedAnswer}\n\nContext Sources:\n${contextChunks.map((c, i) => `[Source ${i}]: ${c.slice(0, 1000)}`).join("\n---\n")}`;
+
+  for (const model of CLEF_MODEL_CANDIDATES) {
+    try {
+      const response = await aiBinding.run(model as any, {
+        state,
+        questions: {
+          is_grounded: {
+            type: "noul",
+            instructions: "Are all claims, names, and facts in the Generated Answer strictly supported by the Context Sources without hallucination?"
+          },
+          grounding_confidence: {
+            type: "score",
+            instructions: "Rate how accurately the answer cites and reflects the source context.",
+            criteria: ["Unrelated/Hallucinated", "Partial", "Mostly Grounded", "Fully Grounded"]
+          }
+        }
+      });
+
+      const answers = (response as any)?.answers || (response as any);
+      if (answers && answers.is_grounded !== undefined) {
+        const noulVal = typeof answers.is_grounded?.noul === "number"
+          ? answers.is_grounded.noul
+          : (answers.is_grounded === true ? 1.0 : 0.0);
+        const isGrounded = noulVal >= 0.5;
+
+        const scoreVal = typeof answers.grounding_confidence?.score === "number"
+          ? answers.grounding_confidence.score / 3.0
+          : (isGrounded ? 0.95 : 0.35);
+
+        return {
+          isGrounded,
+          confidenceScore: Math.round(scoreVal * 100) / 100,
+          supportedChunkIndices: [0],
+          hallucinationWarning: isGrounded ? null : "Warning: Claim unsupported by sources (verified via @cf/cloudflare/clef)",
+          rewrittenAnswer: isGrounded ? generatedAnswer : "The clipped sources do not contain sufficient verified information to answer this question.",
+        };
+      }
+    } catch (clefErr) {
+      console.warn(`Clef RAG audit ${model} failed:`, clefErr);
+      continue;
+    }
+  }
+  return null;
+}
+
+/**
+ * Evaluates a scraped page using JEV-1.14.0 with fallback to Cloudflare Clef (@cf/cloudflare/clef).
  */
 export async function evaluateScrapedDocument(
   env: { AI?: any },
   markdown: string,
   url: string
 ): Promise<JevDocumentEvaluation> {
-  // Truncate markdown to 28,000 characters to comfortably fit inside the 32k context window
+  // Truncate markdown to 28,000 characters to comfortably fit inside the context window
   const truncatedMarkdown = (markdown || "").slice(0, 28000);
 
   const systemPrompt = `You are TypeSafe JEV-1.14.0, an autonomous technical evaluation and state extraction model.
@@ -123,6 +265,7 @@ Strict Rule: Output ONLY the JSON object. Do not add markdown commentary outside
 
   const userPrompt = `Target URL: ${url}\n\nScraped Markdown Content:\n${truncatedMarkdown}`;
 
+  // 1. Primary: TypeSafe JEV-1.14.0
   try {
     const rawResult = await invokeJev(env.AI, systemPrompt, userPrompt);
     const parsed = cleanAndParseJson<Partial<JevDocumentEvaluation>>(rawResult);
@@ -159,10 +302,20 @@ Strict Rule: Output ONLY the JSON object. Do not add markdown commentary outside
       };
     }
   } catch (err) {
-    console.warn("JEV document evaluation call failed, applying heuristic fallback:", err);
+    console.warn("JEV document evaluation call failed, attempting fallback to @cf/cloudflare/clef:", err);
   }
 
-  // Heuristic / Offline Fallback
+  // 2. Secondary Fallback: Cloudflare Clef (@cf/cloudflare/clef)
+  try {
+    const clefResult = await evaluateWithClef(env.AI, truncatedMarkdown, url);
+    if (clefResult) {
+      return clefResult;
+    }
+  } catch (clefErr) {
+    console.warn("Clef evaluation failed, proceeding to heuristic fallback:", clefErr);
+  }
+
+  // 3. Tertiary Heuristic / Offline Fallback
   const lower = truncatedMarkdown.toLowerCase();
   const isBlocked =
     lower.includes("access denied") ||
@@ -197,10 +350,8 @@ Strict Rule: Output ONLY the JSON object. Do not add markdown commentary outside
 }
 
 /**
- * Active Self-Correction Gate using JEV-1.14.0.
+ * Active Self-Correction Gate using JEV-1.14.0 with fallback to Cloudflare Clef (@cf/cloudflare/clef).
  * Verifies whether the generated LLM response is strictly grounded in the retrieved chunks.
- * If hallucinations, false attributions, or quote mismatches are detected, JEV rewrites the answer
- * to strip unsupported claims and replace them with factual statements or "Not mentioned in the clipped sources".
  */
 export async function evaluateRagGroundedness(
   env: { AI?: any },
@@ -235,6 +386,7 @@ Strict Rule: Output ONLY the valid JSON object.`;
     .map((c, i) => `[Chunk ${i}]:\n${c.slice(0, 1200)}`)
     .join("\n\n---\n\n")}\n\nGenerated Answer to Verify:\n${generatedAnswer}`;
 
+  // 1. Primary: TypeSafe JEV-1.14.0
   try {
     const rawResult = await invokeJev(env.AI, systemPrompt, userPrompt);
     const parsed = cleanAndParseJson<Partial<JevRagEvaluation>>(rawResult);
@@ -261,10 +413,20 @@ Strict Rule: Output ONLY the valid JSON object.`;
       };
     }
   } catch (err) {
-    console.warn("JEV RAG groundedness evaluation warning, using fallback:", err);
+    console.warn("JEV RAG groundedness evaluation call failed, attempting fallback to @cf/cloudflare/clef:", err);
   }
 
-  // Fallback: Check if answer contains text from chunks
+  // 2. Secondary Fallback: Cloudflare Clef (@cf/cloudflare/clef)
+  try {
+    const clefResult = await evaluateRagWithClef(env.AI, query, contextChunks, generatedAnswer);
+    if (clefResult) {
+      return clefResult;
+    }
+  } catch (clefErr) {
+    console.warn("Clef RAG evaluation failed, proceeding to heuristic fallback:", clefErr);
+  }
+
+  // 3. Tertiary Fallback: Check if answer contains text from chunks
   const isReasonablyGrounded = contextChunks.some((c) =>
     c.split(/\s+/).filter((w) => w.length > 5 && generatedAnswer.toLowerCase().includes(w.toLowerCase())).length > 3
   );
