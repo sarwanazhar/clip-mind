@@ -329,7 +329,7 @@ ClipMind/
 ### 1. Clone & Install Dependencies
 
 ```bash
-git clone https://github.com/your-username/ClipMind.git
+git clone https://github.com/sarwanazhar/ClipMind.git
 cd ClipMind
 pnpm install
 ```
