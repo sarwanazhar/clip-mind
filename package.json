@@ -1,0 +1,26 @@
+{
+  "name": "clipmind",
+  "version": "1.0.0",
+  "description": "Cloudflare-Native Edge Web Clipper, RAG Vault & Discord Ingestion Agent",
+  "main": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "build": "wrangler deploy --dry-run --outdir=dist",
+    "deploy": "wrangler deploy",
+    "test": "vitest run",
+    "db:migrate:local": "wrangler d1 execute clipmind-db --local --file=./migrations/0001_init.sql"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^0.0.14",
+    "hono": "^4.7.4",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.7",
+    "wrangler": "^3.114.0"
+  }
+}
